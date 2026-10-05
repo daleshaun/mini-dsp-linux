@@ -1,0 +1,12 @@
+CPU compatibility smoke check, 2026-10-03
+Emulator: qemu-x86_64-static 11.1.1, CPU model Penryn (Core 2)
+Program: upstream bundled node-v26.10.0-linux-x64/bin/node
+--version output: v26.10.0
+JavaScript: console.log(process.arch, new Float64Array([1,2,3]).reduce((a,b)=>a+b,0))
+Output: x64 6
+Both commands exited 0.
+Scope: Node startup and one JavaScript operation only. Not an OS boot test or proof of all desktop/audio binaries.
+
+Builder /usr/bin/bash ELF properties: x86 ISA needed: x86-64-baseline.
+Kernel selected in offline mirror: linux-lts-6.18.49-3
+Wi-Fi driver selected in offline mirror: broadcom-wl-dkms-6.30.223.271-49

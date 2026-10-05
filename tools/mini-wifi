@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Stage a reversible Macmini4,1 Broadcom fix; never interrupt a live link."""
+import argparse
+import base64
+import fnmatch
+import json
+import os
+from pathlib import Path
+import platform
+import subprocess
+import sys
+
+FILES = {
+    "/etc/modprobe.d/broadcom-wl-dkms.conf":
+        "# mini-dsp: wl selection; undo with mini-wifi rollback\n"
+        "blacklist b43\nblacklist b43legacy\nblacklist ssb\n"
+        "blacklist bcma\nblacklist brcmsmac\n",
+    "/etc/modules-load.d/mini-dsp-wifi.conf": "wl\n",
+    "/etc/NetworkManager/conf.d/90-mini-dsp-wifi.conf":
+        "# Defaults only: explicit per-connection settings take precedence.\n"
+        "[connection-mini-dsp-wifi]\nmatch-device=driver:wl\nwifi.powersave=2\n",
+}
+STATE = Path("/var/lib/mini-dsp/wifi-backup.json")
+DISABLED = Path("/var/lib/mini-dsp/wifi-disabled")
+
+
+def output(*args):
+    try:
+        p = subprocess.run(args, text=True, capture_output=True, timeout=15)
+        return p.stdout.strip() if p.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def read(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return ""
+
+
+def inventory(sysroot=Path("/sys")):
+    cards = []
+    for device in sorted((sysroot / "bus/pci/devices").glob("*")):
+        if read(device / "vendor") != "0x14e4" or read(device / "class") != "0x028000":
+            continue
+        driver = device / "driver"
+        cards.append({"pci": device.name, "id": "14e4:" + read(device / "device")[2:],
+                      "modalias": read(device / "modalias"),
+                      "driver": driver.resolve().name if driver.is_symlink() else "unbound"})
+    return {"model": read(sysroot / "class/dmi/id/product_name"),
+            "kernel": platform.release(), "cards": cards,
+            "wl_vermagic": output("modinfo", "-F", "vermagic", "wl"),
+            "wl_aliases": output("modinfo", "-F", "alias", "wl").splitlines()}
+
+
+def eligibility(info):
+    if info["model"] != "Macmini4,1":
+        return "This patch targets Macmini4,1; no changes made on other models."
+    if len(info["cards"]) != 1:
+        return "Expected one Broadcom PCI Wi-Fi card; inspect the hardware report."
+    magic = info["wl_vermagic"].split()
+    if not magic or magic[0] != info["kernel"]:
+        return "No wl module built for the running kernel. Install matching headers and rebuild DKMS."
+    alias = info["cards"][0]["modalias"].lower()
+    if not alias or not any(fnmatch.fnmatchcase(alias, a.lower()) for a in info["wl_aliases"]):
+        return "The installed wl module does not advertise support for this Wi-Fi card."
+    return ""
+
+
+def snapshot(path):
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to replace symlink: {path}")
+    if not path.exists():
+        return None
+    st = path.stat()
+    return {"data": base64.b64encode(path.read_bytes()).decode(),
+            "mode": st.st_mode & 0o777, "uid": st.st_uid, "gid": st.st_gid}
+
+
+def atomic_write(path, data, mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".mini-dsp-new")
+    # Never follow a pre-existing temporary file or symlink.
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            os.fchmod(f.fileno(), mode)
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def apply_files(root=Path("/")):
+    state = root / str(STATE).lstrip("/")
+    originals = {name: snapshot(root / name.lstrip("/")) for name in FILES}
+    if state.exists():
+        saved = json.loads(state.read_text())
+        if set(saved) != set(FILES):
+            raise RuntimeError("Backup paths do not match this patch version.")
+        for name, content in FILES.items():
+            path = root / name.lstrip("/")
+            if originals[name] != saved[name] and (not path.exists() or path.read_bytes() != content.encode()):
+                raise RuntimeError(f"Changed since patch: {path}. Refusing to overwrite your edits.")
+    else:
+        state.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(state, json.dumps(originals).encode(), 0o600)
+    for name, content in FILES.items():
+        atomic_write(root / name.lstrip("/"), content.encode())
+    (root / str(DISABLED).lstrip("/")).unlink(missing_ok=True)
+
+
+def rollback(root=Path("/")):
+    state = root / str(STATE).lstrip("/")
+    if not state.exists():
+        raise RuntimeError("No saved Wi-Fi configuration to restore.")
+    originals = json.loads(state.read_text())
+    if set(originals) != set(FILES):
+        raise RuntimeError("Backup paths do not match this patch version.")
+    # Preflight every file, so user edits are not overwritten by rollback.
+    for name, content in FILES.items():
+        path = root / name.lstrip("/")
+        old = originals[name]
+        current = snapshot(path)
+        if current != old and (current is None or path.read_bytes() != content.encode()):
+            raise RuntimeError(f"Changed since patch: {path}. Preserve your edits before rollback.")
+    for name, old in originals.items():
+        path = root / name.lstrip("/")
+        if old is None:
+            path.unlink(missing_ok=True)
+        else:
+            atomic_write(path, base64.b64decode(old["data"]), old["mode"])
+            if os.geteuid() == 0:
+                os.chown(path, old["uid"], old["gid"])
+    atomic_write(root / str(DISABLED).lstrip("/"), b"Disabled by mini-wifi rollback. Manual apply re-enables.\n")
+    state.unlink()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=["status", "plan", "apply", "rollback"], nargs="?", default="status")
+    args = parser.parse_args()
+    if platform.system() != "Linux":
+        parser.exit(2, "Run this tool on the Linux Mac mini, not on the build Mac.\n")
+    if args.action in {"apply", "rollback"} and os.geteuid() != 0:
+        parser.exit(2, "Use sudo for apply or rollback.\n")
+    if args.action == "rollback":
+        rollback()
+        print("Original configuration restored. Rebuild initramfs (sudo mkinitcpio -P), then reboot.")
+        return
+    info = inventory()
+    reason = eligibility(info)
+    if args.action == "status":
+        info.pop("wl_aliases")
+        info["patch_eligibility"] = reason or "eligible; hardware behavior still requires testing"
+        print(json.dumps(info, indent=2))
+        return
+    if reason:
+        parser.exit(2, reason + "\n")
+    if args.action == "plan":
+        print("Stage wl, disable competing Broadcom modules and default wl power saving.")
+        print("Files: " + ", ".join(FILES))
+        print("No link is stopped; apply, rebuild initramfs, and reboot to activate.")
+        return
+    apply_files()
+    print("Wi-Fi configuration staged with backup. No modules unloaded or services restarted.")
+    print("Run sudo mkinitcpio -P, then reboot. Explicit connection power-save settings can override defaults.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RuntimeError, OSError, ValueError) as e:
+        sys.exit(str(e))

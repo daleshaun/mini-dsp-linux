@@ -1,0 +1,13 @@
+[Unit]
+Description=Mini DSP non-installing live diagnostics
+After=NetworkManager.service
+ConditionKernelCommandLine=mini_dsp_diagnostics=1
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mini-dsp-diagnostics
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

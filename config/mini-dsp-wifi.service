@@ -1,0 +1,16 @@
+[Unit]
+Description=Stage Mac mini Broadcom compatibility settings
+After=systemd-udev-trigger.service
+Before=NetworkManager.service
+ConditionPathExists=/sys/class/dmi/id/product_name
+ConditionPathExists=!/var/lib/mini-dsp/wifi-disabled
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mini-wifi apply
+# Hardware other than Macmini4,1 or an unsupported module is left alone.
+SuccessExitStatus=2
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
