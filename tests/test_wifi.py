@@ -30,6 +30,38 @@ class WifiSafetyTests(unittest.TestCase):
             data[key] = value
             self.assertTrue(wifi.eligibility(data))
 
+    def test_inventory_parses_broadcom_wifi_and_ignores_others(self):
+        with tempfile.TemporaryDirectory() as d:
+            sysroot = Path(d)
+            devs = sysroot / "bus/pci/devices"
+
+            def mkdev(slot, vendor, cls, device, modalias, driver=None):
+                dev = devs / slot
+                dev.mkdir(parents=True)
+                (dev / "vendor").write_text(vendor + "\n")
+                (dev / "class").write_text(cls + "\n")
+                (dev / "device").write_text(device + "\n")
+                (dev / "modalias").write_text(modalias + "\n")
+                if driver:
+                    drv = sysroot / "bus/pci/drivers" / driver
+                    drv.mkdir(parents=True, exist_ok=True)
+                    (dev / "driver").symlink_to(drv)
+
+            # Broadcom wireless (class 0x0280xx) bound to wl -> should be picked up.
+            mkdev("0000:02:00.0", "0x14e4", "0x028000", "0x432b",
+                  "pci:v000014E4d0000432Bsv0000106Bsd00000000bc02sc80i00", driver="wl")
+            # Broadcom ethernet (class 0x0200xx) -> must be ignored.
+            mkdev("0000:03:00.0", "0x14e4", "0x020000", "0x1234", "pci:v000014E4d00001234")
+            # Non-Broadcom wireless -> must be ignored.
+            mkdev("0000:04:00.0", "0x8086", "0x028000", "0x4321", "pci:v00008086d00004321")
+
+            info = wifi.inventory(sysroot)
+            self.assertEqual(len(info["cards"]), 1)
+            card = info["cards"][0]
+            self.assertEqual(card["pci"], "0000:02:00.0")
+            self.assertEqual(card["id"], "14e4:432b")
+            self.assertEqual(card["driver"], "wl")
+
     def test_apply_repeat_rollback_preserves_original(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

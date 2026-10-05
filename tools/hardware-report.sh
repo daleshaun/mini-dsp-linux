@@ -10,12 +10,16 @@ case "$(uname -s)" in
     run diskutil list
     ;;
   Linux)
+    run cat /sys/class/dmi/id/sys_vendor
+    run cat /sys/class/dmi/id/product_name
+    run cat /sys/class/dmi/id/board_name
     run lscpu
     run free -h
     run lspci -nnk
     run lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
     run cat /proc/asound/cards
     run ip -brief link
+    run rfkill list
     ;;
   *) printf 'Unsupported reporting platform\n' ;;
 esac
