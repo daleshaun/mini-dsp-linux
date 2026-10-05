@@ -20,7 +20,9 @@ The user reported unreliable Wi-Fi with original Omarchy. The image now includes
 
 ## Build source
 
-`tools/prepare-iso.py` applies a version-checked overlay to official Omarchy ISO source at commit `86c07785cb0f63be78edb1349843d5817b5c0e66`; its ArchISO submodule is `424e78130db2af6c1ceb55b442d7914b1109ff2b`.
+`tools/prepare-iso.py` applies a version-checked overlay to official Omarchy ISO source (`omacom-io/omarchy-iso`) at commit `86c07785cb0f63be78edb1349843d5817b5c0e66`; its ArchISO submodule is `424e78130db2af6c1ceb55b442d7914b1109ff2b`.
+
+Verified 2026-10-05: the overlay applies cleanly against that pinned commit with no patch drift, and all nine tests pass (including boot-selection against the real checkout — both the interactive configurator and the unattended orchestrator select `linux-lts`, and grub/syslinux reference the LTS kernel). This checks overlay application and boot-entry consistency only; it is not a built ISO and makes no hardware claim.
 
 On a fresh checkout, clone that upstream into `upstream-iso`, check out the pinned commit, and initialize its submodule. Run `bash tools/build-in-linux.sh` inside an isolated x86_64 Linux environment with Docker, Python, git and sudo. The upstream builder uses package repositories and downloads several gigabytes. The pinned recipe does not freeze the package mirrors; preserve output manifests and image hashes for each build.
 
